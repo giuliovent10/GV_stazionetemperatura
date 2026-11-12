@@ -1,0 +1,86 @@
+/*
+  06 - Scansione e lettura di piu' sensori DS18B20 sullo stesso bus
+  (era "Esp32.ino": rinominato perche' il nome dello sketch deve descrivere
+  il contenuto e coincidere con il nome della cartella)
+  Modifiche: pin portato a GPIO 4 (GPIO 2 e' un pin di boot e collegato al LED
+  integrato, puo' dare problemi in programmazione), baud rate 115200.
+*/
+
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+#define PIN_DATI 4
+
+OneWire oneWire(PIN_DATI);
+DallasTemperature sensori(&oneWire);
+
+int numeroSensori = 0;
+
+void stampaIndirizzo(DeviceAddress addr) {
+  for (uint8_t i = 0; i < 8; i++) {
+    if (addr[i] < 16) Serial.print("0");
+    Serial.print(addr[i], HEX);
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println();
+  Serial.println("--- Ricerca Sensori sul Bus ---");
+
+  sensori.begin();
+  sensori.setResolution(12);
+
+  // Conta quanti sensori sono presenti sulla linea dati
+  numeroSensori = sensori.getDeviceCount();
+
+  Serial.print("Sensori trovati sul pin ");
+  Serial.print(PIN_DATI);
+  Serial.print(": ");
+  Serial.println(numeroSensori);
+
+  // Stampa l'indirizzo univoco di ogni sensore
+  for (int i = 0; i < numeroSensori; i++) {
+    DeviceAddress addr;
+    if (sensori.getAddress(addr, i)) {
+      Serial.print("  Sensore #");
+      Serial.print(i);
+      Serial.print(" indirizzo: ");
+      stampaIndirizzo(addr);
+      Serial.println();
+    }
+  }
+}
+
+void loop() {
+  if (numeroSensori == 0) {
+    Serial.println("Nessun sensore rilevato. Verifica i collegamenti e la resistenza da 4.7k.");
+    delay(5000);
+    // Riprova a cercare i sensori (utile se vengono collegati dopo l'avvio)
+    sensori.begin();
+    numeroSensori = sensori.getDeviceCount();
+    return;
+  }
+
+  // Richiedi la temperatura a tutti i sensori connessi
+  sensori.requestTemperatures();
+
+  for (int i = 0; i < numeroSensori; i++) {
+    float tempC = sensori.getTempCByIndex(i);
+
+    Serial.print("Sensore #");
+    Serial.print(i);
+    Serial.print(": ");
+
+    if (tempC != DEVICE_DISCONNECTED_C) {
+      Serial.print(tempC, 2);
+      Serial.println(" C");
+    } else {
+      Serial.println("ERRORE LETTURA");
+    }
+  }
+
+  Serial.println("------------------------------------");
+  delay(3000);
+}
