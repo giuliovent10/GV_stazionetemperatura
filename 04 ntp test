@@ -17,7 +17,7 @@ const char* password = "PASSWORD_WIFI";
 const char* ntpServer = "pool.ntp.org";
 
 // Fuso orario italiano (CET/CEST con ora legale automatica)
-const char* timezone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+const char* fusoOrario = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
 void printLocalTime() {
   struct tm timeinfo;
@@ -56,7 +56,7 @@ void setup() {
   Serial.println("\nWi-Fi connesso!");
 
   // Configurazione orologio
-  configTzTime(timezone, ntpServer);
+  configTzTime(fusoOrario, ntpServer);
   Serial.println("Sincronizzazione orologio...");
 }
 
