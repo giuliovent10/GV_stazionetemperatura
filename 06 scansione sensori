@@ -2,14 +2,14 @@
   06 - Scansione e lettura di piu' sensori DS18B20 sullo stesso bus
   (era "Esp32.ino": rinominato perche' il nome dello sketch deve descrivere
   il contenuto e coincidere con il nome della cartella)
-  Modifiche: pin portato a GPIO 4 (GPIO 2 e' un pin di boot e collegato al LED
+  Modifiche: pin portato a GPIO 16 (GPIO 2 e' un pin di boot e collegato al LED
   integrato, puo' dare problemi in programmazione), baud rate 115200.
 */
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
-#define PIN_DATI 4
+#define PIN_DATI 16
 
 OneWire oneWire(PIN_DATI);
 DallasTemperature sensori(&oneWire);
@@ -55,7 +55,7 @@ void setup() {
 
 void loop() {
   if (numeroSensori == 0) {
-    Serial.println("Nessun sensore rilevato. Verifica i collegamenti e la resistenza da 4.7k.");
+    Serial.println("Nessun sensore rilevato. Verifica i collegamenti (e la resistenza da 4.7k se il sensore e' nudo).");
     delay(5000);
     // Riprova a cercare i sensori (utile se vengono collegati dopo l'avvio)
     sensori.begin();
