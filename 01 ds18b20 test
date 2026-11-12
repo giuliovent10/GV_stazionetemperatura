@@ -1,0 +1,46 @@
+/*
+  01 - Test sensore DS18B20
+  Collegamenti:
+    DS18B20 rosso  (VDD)  -> 3.3V
+    DS18B20 nero   (GND)  -> GND
+    DS18B20 giallo (DATA) -> GPIO 4
+    Resistenza pull-up da 4.7 kOhm tra DATA e 3.3V (OBBLIGATORIA)
+*/
+
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// Pin del sensore DS18B20
+#define ONE_WIRE_BUS 4
+
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+
+  sensors.begin();
+  sensors.setResolution(12);  // 12 bit = 0.0625 gradi di risoluzione
+
+  Serial.println();
+  Serial.println("--- TEST DS18B20 ---");
+  Serial.print("Sensori trovati: ");
+  Serial.println(sensors.getDeviceCount());
+}
+
+void loop() {
+  sensors.requestTemperatures();
+
+  float tempC = sensors.getTempCByIndex(0);
+
+  if (tempC == DEVICE_DISCONNECTED_C) {
+    Serial.println("Errore: sensore non trovato! Controlla cablaggio e resistenza da 4.7k.");
+  } else {
+    Serial.print("Temperatura: ");
+    Serial.print(tempC, 2);
+    Serial.println(" C");
+  }
+
+  delay(2000);
+}
