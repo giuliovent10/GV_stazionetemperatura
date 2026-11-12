@@ -3,15 +3,15 @@
   Collegamenti:
     DS18B20 rosso  (VDD)  -> 3.3V
     DS18B20 nero   (GND)  -> GND
-    DS18B20 giallo (DATA) -> GPIO 4
-    Resistenza pull-up da 4.7 kOhm tra DATA e 3.3V (OBBLIGATORIA)
+    DS18B20 DATA -> GPIO 16 (D16 sulla scheda)
+    Il modulo con il sensore ha gia' la resistenza da 4.7 kOhm; se usi un DS18B20 "nudo" aggiungila tra DATA e 3.3V
 */
 
 #include <OneWire.h>
 #include <DallasTemperature.h>
 
 // Pin del sensore DS18B20
-#define ONE_WIRE_BUS 4
+#define ONE_WIRE_BUS 16
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -35,7 +35,7 @@ void loop() {
   float tempC = sensors.getTempCByIndex(0);
 
   if (tempC == DEVICE_DISCONNECTED_C) {
-    Serial.println("Errore: sensore non trovato! Controlla cablaggio e resistenza da 4.7k.");
+    Serial.println("Errore: sensore non trovato! Controlla cablaggio e resistenza da 4.7k (solo per sensore nudo).");
   } else {
     Serial.print("Temperatura: ");
     Serial.print(tempC, 2);
@@ -44,3 +44,5 @@ void loop() {
 
   delay(2000);
 }
+
+ 
