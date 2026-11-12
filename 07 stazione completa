@@ -1,0 +1,273 @@
+/*
+  07 - STAZIONE DI RILEVAMENTO TEMPERATURA COMPLETA
+  ESP32 + DS18B20
+
+  Funzioni:
+   - misura la temperatura ogni minuto
+   - orario sincronizzato via NTP (ora italiana con ora legale)
+   - salva le misure in un file CSV nella memoria flash (LittleFS)
+   - pagina web con valore attuale e ultime misure  -> http://IP_ESP32/
+   - dati in JSON                                    -> http://IP_ESP32/data
+   - scarico del file CSV                            -> http://IP_ESP32/csv
+   - cancellazione del file CSV                      -> http://IP_ESP32/cancella
+   - se il Wi-Fi di casa/scuola non si connette, l'ESP32 crea una sua rete
+     (Access Point) "Stazione_Termica_ESP32" e la pagina e' su http://192.168.4.1
+
+  Collegamenti: DATA -> GPIO 4, VDD -> 3.3V, GND -> GND,
+                resistenza 4.7 kOhm tra DATA e 3.3V
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+#include <LittleFS.h>
+#include <OneWire.h>
+#include <DallasTemperature.h>
+#include "time.h"
+
+// -------------------------
+// CONFIGURAZIONE
+// -------------------------
+const char* ssid = "NOME_RETE_WIFI";
+const char* password = "PASSWORD_WIFI";
+
+const char* ap_ssid = "Stazione_Termica_ESP32";
+const char* ap_password = "Password123";
+
+const char* ntpServer = "pool.ntp.org";
+const char* timezone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+
+#define ONE_WIRE_BUS 4
+const unsigned long INTERVALLO = 60000;  // ms tra due misure
+const char* FILE_LOG = "/log.csv";
+const int MAX_STORICO = 30;              // misure mostrate nella pagina
+
+// -------------------------
+// OGGETTI E VARIABILI
+// -------------------------
+OneWire oneWire(ONE_WIRE_BUS);
+DallasTemperature sensors(&oneWire);
+WebServer server(80);
+
+struct Misura {
+  char data[11];  // gg/mm/aaaa
+  char ora[9];    // hh:mm:ss
+  float temp;
+};
+
+Misura storico[MAX_STORICO];
+int nStorico = 0;      // quante misure valide
+int testaStorico = 0;  // prossima posizione da scrivere
+
+float ultimaTemp = NAN;
+bool sensoreOk = false;
+bool modoAP = false;
+bool primaMisura = true;
+unsigned long ultimaMisura = 0;
+
+// -------------------------
+// FUNZIONI DI SUPPORTO
+// -------------------------
+bool prendiOra(char* data, char* ora) {
+  struct tm t;
+  if (!getLocalTime(&t, 0) || t.tm_year < 120) {  // anno < 2020 = non sincronizzato
+    strcpy(data, "N/D");
+    strcpy(ora, "N/D");
+    return false;
+  }
+  snprintf(data, 11, "%02d/%02d/%04d", t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
+  snprintf(ora, 9, "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+  return true;
+}
+
+void salvaSuFile(const Misura& m) {
+  bool nuovo = !LittleFS.exists(FILE_LOG);
+  File f = LittleFS.open(FILE_LOG, FILE_APPEND);
+  if (!f) {
+    Serial.println("Errore: impossibile aprire il file di log!");
+    return;
+  }
+  if (nuovo) f.println("Data,Ora,Temperatura_C");
+  f.printf("%s,%s,%.2f\n", m.data, m.ora, m.temp);
+  f.close();
+}
+
+void eseguiMisura() {
+  sensors.requestTemperatures();
+  float t = sensors.getTempCByIndex(0);
+
+  if (t == DEVICE_DISCONNECTED_C) {
+    sensoreOk = false;
+    Serial.println("Errore: sensore non trovato!");
+    return;
+  }
+
+  sensoreOk = true;
+  ultimaTemp = t;
+
+  Misura m;
+  prendiOra(m.data, m.ora);
+  m.temp = t;
+
+  storico[testaStorico] = m;
+  testaStorico = (testaStorico + 1) % MAX_STORICO;
+  if (nStorico < MAX_STORICO) nStorico++;
+
+  salvaSuFile(m);
+  Serial.printf("%s,%s,%.2f\n", m.data, m.ora, m.temp);
+}
+
+// -------------------------
+// PAGINE WEB
+// -------------------------
+void handleRoot() {
+  char data[11], ora[9];
+  prendiOra(data, ora);
+
+  String html;
+  html.reserve(3000);
+  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
+            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+            "<meta http-equiv='refresh' content='30'>"
+            "<title>Stazione Termica</title>"
+            "<style>body{font-family:sans-serif;max-width:600px;margin:20px auto;padding:0 12px;}"
+            "h1{font-size:1.4em}.temp{font-size:3em;font-weight:bold;color:#c0392b}"
+            "table{border-collapse:collapse;width:100%}"
+            "td,th{border:1px solid #ccc;padding:6px;text-align:center}"
+            "a{margin-right:12px}</style></head><body>");
+  html += F("<h1>Stazione di rilevamento temperatura</h1>");
+
+  if (sensoreOk) {
+    html += "<div class='temp'>" + String(ultimaTemp, 2) + " &deg;C</div>";
+  } else {
+    html += F("<div class='temp'>--</div><p><b>Sensore non rilevato!</b></p>");
+  }
+  html += "<p>Ora attuale: " + String(data) + " " + String(ora) + "</p>";
+
+  html += F("<h2>Ultime misure</h2><table><tr><th>Data</th><th>Ora</th><th>&deg;C</th></tr>");
+  // dalla piu' recente alla piu' vecchia
+  for (int i = 0; i < nStorico; i++) {
+    int idx = (testaStorico - 1 - i + MAX_STORICO) % MAX_STORICO;
+    html += "<tr><td>" + String(storico[idx].data) + "</td><td>" + String(storico[idx].ora) +
+            "</td><td>" + String(storico[idx].temp, 2) + "</td></tr>";
+  }
+  html += F("</table><p><a href='/csv'>Scarica CSV</a><a href='/data'>JSON</a>"
+            "<a href='/cancella' onclick=\"return confirm('Cancellare il file di log?')\">Cancella log</a></p>"
+            "</body></html>");
+
+  server.send(200, "text/html", html);
+}
+
+void handleData() {
+  char data[11], ora[9];
+  prendiOra(data, ora);
+
+  String json = "{";
+  json += "\"sensore_ok\":" + String(sensoreOk ? "true" : "false") + ",";
+  json += "\"temperatura\":" + (sensoreOk ? String(ultimaTemp, 2) : String("null")) + ",";
+  json += "\"data\":\"" + String(data) + "\",";
+  json += "\"ora\":\"" + String(ora) + "\"}";
+  server.send(200, "application/json", json);
+}
+
+void handleCsv() {
+  if (!LittleFS.exists(FILE_LOG)) {
+    server.send(404, "text/plain", "Nessuna misura registrata.");
+    return;
+  }
+  File f = LittleFS.open(FILE_LOG, FILE_READ);
+  server.sendHeader("Content-Disposition", "attachment; filename=temperature.csv");
+  server.streamFile(f, "text/csv");
+  f.close();
+}
+
+void handleCancella() {
+  LittleFS.remove(FILE_LOG);
+  nStorico = 0;
+  testaStorico = 0;
+  server.sendHeader("Location", "/");
+  server.send(303);
+}
+
+// -------------------------
+// RETE
+// -------------------------
+void avviaRete() {
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.print("Connessione Wi-Fi");
+  int tentativi = 0;
+  while (WiFi.status() != WL_CONNECTED && tentativi < 30) {
+    delay(500);
+    Serial.print(".");
+    tentativi++;
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    modoAP = false;
+    Serial.print("Wi-Fi connesso! IP: ");
+    Serial.println(WiFi.localIP());
+    configTzTime(timezone, ntpServer);
+  } else {
+    Serial.println("Wi-Fi non disponibile: avvio Access Point (senza orario NTP).");
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP(ap_ssid, ap_password);
+    modoAP = true;
+    Serial.print("Rete: ");
+    Serial.print(ap_ssid);
+    Serial.print(" - IP: ");
+    Serial.println(WiFi.softAPIP());
+  }
+}
+
+// -------------------------
+// SETUP E LOOP
+// -------------------------
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println();
+  Serial.println("--- STAZIONE TERMICA COMPLETA ---");
+
+  sensors.begin();
+  sensors.setResolution(12);
+  Serial.print("Sensori trovati: ");
+  Serial.println(sensors.getDeviceCount());
+
+  if (!LittleFS.begin(true)) {  // true = formatta se e' la prima volta
+    Serial.println("Errore: LittleFS non avviato, il log su file non funzionera'.");
+  }
+
+  avviaRete();
+
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  server.on("/csv", handleCsv);
+  server.on("/cancella", handleCancella);
+  server.begin();
+  Serial.println("Web server avviato.");
+
+  Serial.println("Data,Ora,Temperatura_C");
+}
+
+void loop() {
+  server.handleClient();
+
+  // Riconnessione automatica se si e' in modalita' client e il Wi-Fi cade
+  if (!modoAP && WiFi.status() != WL_CONNECTED) {
+    static unsigned long ultimoTentativo = 0;
+    if (millis() - ultimoTentativo >= 30000) {
+      ultimoTentativo = millis();
+      Serial.println("Wi-Fi perso, riconnessione...");
+      WiFi.disconnect();
+      WiFi.begin(ssid, password);
+    }
+  }
+
+  if (primaMisura || millis() - ultimaMisura >= INTERVALLO) {
+    primaMisura = false;
+    ultimaMisura = millis();
+    eseguiMisura();
+  }
+}
