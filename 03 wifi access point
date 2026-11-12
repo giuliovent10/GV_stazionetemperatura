@@ -1,0 +1,59 @@
+/*
+  03 - Test ESP32 come Access Point
+  La password deve avere almeno 8 caratteri.
+  Dopo l'avvio, collega telefono/PC alla rete e apri http://192.168.4.1
+*/
+
+#include <WiFi.h>
+#include <WebServer.h>
+
+// Nome della rete e password che l'ESP32 creera'
+const char* ap_ssid = "Stazione_Termica_ESP32";
+const char* ap_password = "Password123";
+
+WebServer server(80);
+
+void handleRoot() {
+  server.send(200, "text/html",
+              "<html><head><meta charset='utf-8'>"
+              "<meta name='viewport' content='width=device-width, initial-scale=1'></head>"
+              "<body><h1>Stazione Termica ESP32</h1>"
+              "<p>Access Point funzionante!</p></body></html>");
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println();
+  Serial.println("Configurazione Access Point in corso...");
+
+  WiFi.mode(WIFI_AP);
+  bool ok = WiFi.softAP(ap_ssid, ap_password);
+
+  if (!ok) {
+    Serial.println("Errore: avvio Access Point fallito!");
+    return;
+  }
+
+  IPAddress myIP = WiFi.softAPIP();
+  Serial.print("Access Point avviato! Nome rete: ");
+  Serial.println(ap_ssid);
+  Serial.print("Indirizzo IP per collegarsi all'ESP32: ");
+  Serial.println(myIP);
+
+  server.on("/", handleRoot);
+  server.begin();
+  Serial.println("Web server avviato sulla porta 80");
+}
+
+void loop() {
+  server.handleClient();
+
+  // Ogni 5 secondi mostra quanti dispositivi sono connessi
+  static unsigned long ultimoMessaggio = 0;
+  if (millis() - ultimoMessaggio >= 5000) {
+    ultimoMessaggio = millis();
+    Serial.print("Dispositivi attualmente connessi: ");
+    Serial.println(WiFi.softAPgetStationNum());
+  }
+}
