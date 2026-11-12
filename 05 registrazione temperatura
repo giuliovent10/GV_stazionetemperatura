@@ -1,7 +1,7 @@
 /*
   05 - Registrazione temperatura in formato CSV su Serial Monitor
   Correzioni rispetto alla versione originale:
-   - pin del sensore uniformato a GPIO 4 (prima era 15, diverso dagli altri sketch)
+   - pin del sensore uniformato a GPIO 16, come nel montaggio (prima era 15)
    - se il Wi-Fi/NTP non e' pronto in setup(), il programma ora riprova
      nel loop() invece di restare bloccato senza registrare
    - la prima misura viene fatta subito, senza aspettare 60 secondi
@@ -22,12 +22,12 @@ const char* password = "PASSWORD_WIFI";
 // CONFIGURAZIONE NTP
 // -------------------------
 const char* ntpServer = "pool.ntp.org";
-const char* timezone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+const char* fusoOrario = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
 // -------------------------
 // CONFIGURAZIONE SENSORE
 // -------------------------
-#define ONE_WIRE_BUS 4
+#define ONE_WIRE_BUS 16
 
 OneWire oneWire(ONE_WIRE_BUS);
 DallasTemperature sensors(&oneWire);
@@ -57,7 +57,7 @@ bool connettiWiFi() {
 }
 
 void avviaNTP() {
-  configTzTime(timezone, ntpServer);
+  configTzTime(fusoOrario, ntpServer);
   ntpAvviato = true;
 
   struct tm timeinfo;
@@ -132,4 +132,3 @@ void loop() {
                   timeinfo.tm_sec,
                   temperatura);
   }
-}
