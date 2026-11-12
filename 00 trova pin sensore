@@ -1,0 +1,50 @@
+/*
+  00 - Trova il pin del sensore DS18B20
+  Se "sensore non trovato" con gli altri sketch, carica questo: prova uno
+  per uno i GPIO piu' usati e dice su quale hai collegato il filo DATA.
+  Apri il Serial Monitor a 115200 baud.
+*/
+
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
+// GPIO da provare (tutti utilizzabili come pin normali)
+const int PIN_DA_PROVARE[] = {4, 5, 13, 14, 16, 17, 18, 19, 21, 22, 23, 25, 26, 27, 32, 33};
+const int N_PIN = sizeof(PIN_DA_PROVARE) / sizeof(PIN_DA_PROVARE[0]);
+
+void setup() {
+  Serial.begin(115200);
+  delay(1500);
+  Serial.println();
+  Serial.println("--- RICERCA PIN SENSORE DS18B20 ---");
+}
+
+void loop() {
+  bool trovato = false;
+
+  for (int i = 0; i < N_PIN; i++) {
+    int pin = PIN_DA_PROVARE[i];
+
+    OneWire ow(pin);
+    DallasTemperature s(&ow);
+    s.begin();
+
+    int n = s.getDeviceCount();
+    if (n > 0) {
+      s.requestTemperatures();
+      Serial.print("TROVATO sul GPIO ");
+      Serial.print(pin);
+      Serial.print(": ");
+      Serial.print(n);
+      Serial.print(" sensore/i, temperatura ");
+      Serial.print(s.getTempCByIndex(0), 2);
+      Serial.println(" C");
+      trovato = true;
+    }
+  }
+
+  if (!trovato) {
+    Serial.println("Nessun sensore trovato su nessun pin: controlla alimentazione (3V3), GND e filo DATA.");
+  }
+
+  Serial.println("-----------------
