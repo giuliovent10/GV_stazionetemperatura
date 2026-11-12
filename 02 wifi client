@@ -1,0 +1,57 @@
+/*
+  02 - Test Wi-Fi in modalita' client (STA)
+  Ricorda di inserire nome e password della tua rete.
+*/
+
+#include <WiFi.h>
+
+// Credenziali Wi-Fi
+const char* ssid = "NOME_RETE_WIFI";
+const char* password = "PASSWORD_WIFI";
+
+void connettiWiFi() {
+  Serial.print("Connessione a: ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  int tentativi = 0;
+  while (WiFi.status() != WL_CONNECTED && tentativi < 30) {
+    delay(500);
+    Serial.print(".");
+    tentativi++;
+  }
+  Serial.println();
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("Wi-Fi connesso!");
+    Serial.print("Indirizzo IP ESP32: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("Potenza segnale (RSSI): ");
+    Serial.print(WiFi.RSSI());
+    Serial.println(" dBm");
+  } else {
+    Serial.println("Errore connessione Wi-Fi!");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println();
+  Serial.println("--- TEST WIFI CLIENT ---");
+  connettiWiFi();
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.print("Stato Wi-Fi: CONNESSO - IP ");
+    Serial.println(WiFi.localIP());
+  } else {
+    Serial.println("Stato Wi-Fi: DISCONNESSO - riprovo...");
+    connettiWiFi();
+  }
+
+  delay(5000);
+}
