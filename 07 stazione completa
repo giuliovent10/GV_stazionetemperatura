@@ -2,19 +2,25 @@
   07 - STAZIONE DI RILEVAMENTO TEMPERATURA COMPLETA
   ESP32 + DS18B20
 
-  Funzioni:
-   - misura la temperatura ogni minuto
-   - orario sincronizzato via NTP (ora italiana con ora legale)
-   - salva le misure in un file CSV nella memoria flash (LittleFS)
-   - pagina web con valore attuale e ultime misure  -> http://IP_ESP32/
-   - dati in JSON                                    -> http://IP_ESP32/data
-   - scarico del file CSV                            -> http://IP_ESP32/csv
-   - cancellazione del file CSV                      -> http://IP_ESP32/cancella
-   - se il Wi-Fi di casa/scuola non si connette, l'ESP32 crea una sua rete
-     (Access Point) "Stazione_Termica_ESP32" e la pagina e' su http://192.168.4.1
+  Montaggio (come nella foto):
+    DS18B20 DATA  -> GPIO 16 (D16)
+    DS18B20 VCC   -> 3V3
+    DS18B20 GND   -> GND
+    LED + resistenza -> GPIO 18 (D18)  (lampeggia a ogni lettura, veloce se il sensore manca)
+    Il modulo del sensore ha gia' la resistenza da 4.7k. Se usi un DS18B20 "nudo",
+    aggiungila tra DATA e 3V3.
 
-  Collegamenti: DATA -> GPIO 4, VDD -> 3.3V, GND -> GND,
-                resistenza 4.7 kOhm tra DATA e 3.3V
+  Funzioni:
+   - legge la temperatura ogni 5 secondi (valore "live" mostrato sulla pagina)
+   - registra una misura nel file CSV (memoria flash) ogni minuto
+   - orologio reale via NTP (ora italiana con ora legale)
+   - se manca internet l'ora viene presa dal browser che apre la pagina
+   - pagina web:      http://IP_ESP32/
+   - dati JSON:       http://IP_ESP32/data
+   - scarica CSV:     http://IP_ESP32/csv
+   - cancella CSV:    http://IP_ESP32/cancella
+   - se il Wi-Fi non si collega crea la rete "Stazione_Termica_ESP32"
+     (password Password123) e la pagina e' su http://192.168.4.1
 */
 
 #include <WiFi.h>
@@ -22,6 +28,7 @@
 #include <LittleFS.h>
 #include <OneWire.h>
 #include <DallasTemperature.h>
+#include <sys/time.h>
 #include "time.h"
 
 // -------------------------
@@ -34,12 +41,217 @@ const char* ap_ssid = "Stazione_Termica_ESP32";
 const char* ap_password = "Password123";
 
 const char* ntpServer = "pool.ntp.org";
-const char* timezone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+const char* fusoOrario = "CET-1CEST,M3.5.0/2,M10.5.0/3";
 
-#define ONE_WIRE_BUS 4
-const unsigned long INTERVALLO = 60000;  // ms tra due misure
+#define ONE_WIRE_BUS 16   // filo DATA del DS18B20
+#define PIN_LED 18        // LED di stato
+
+const unsigned long INTERVALLO_LIVE = 5000;    // ms tra due letture
+const unsigned long INTERVALLO_LOG = 60000;    // ms tra due registrazioni su file
+const unsigned long TEMPO_CONVERSIONE = 800;   // ms (12 bit = 750 ms)
 const char* FILE_LOG = "/log.csv";
-const int MAX_STORICO = 30;              // misure mostrate nella pagina
+const int MAX_STORICO = 60;                    // misure tenute in memoria per la pagina
+
+// -------------------------
+// PAGINA WEB (HTML + CSS + JavaScript)
+// Nessun file esterno: funziona anche senza internet.
+// -------------------------
+const char PAGINA[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stazione Termica</title>
+<style>
+:root{--bg:#f4f6f8;--card:#fff;--txt:#1b2733;--sub:#6b7a89;--acc:#d35400;--ok:#1e8e3e;--ko:#c5221f;--line:#e1e6eb}
+@media(prefers-color-scheme:dark){:root{--bg:#10161c;--card:#1a232c;--txt:#e8eef3;--sub:#8fa1b2;--acc:#ff9f5a;--ok:#5fd37d;--ko:#ff7b72;--line:#2a3643}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+main{max-width:720px;margin:0 auto;padding:16px}
+h1{font-size:1.1rem;margin:4px 0 14px;font-weight:600}
+.card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:18px;margin-bottom:14px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+@media(max-width:520px){.grid{grid-template-columns:1fr}}
+.lab{font-size:.78rem;color:var(--sub);text-transform:uppercase;letter-spacing:.06em}
+.big{font-size:3.4rem;font-weight:700;line-height:1.1;margin-top:4px;font-variant-numeric:tabular-nums}
+.temp{color:var(--acc)}
+.date{color:var(--sub);margin-top:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap;margin-top:10px}
+.chip{font-size:.8rem;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--sub)}
+.chip.ok{color:var(--ok);border-color:var(--ok)}
+.chip.ko{color:var(--ko);border-color:var(--ko)}
+.stat{display:flex;justify-content:space-between;gap:10px;margin-top:12px}
+.stat div{flex:1}
+.stat b{display:block;font-size:1.25rem;font-variant-numeric:tabular-nums}
+svg{width:100%;height:auto;display:block}
+table{width:100%;border-collapse:collapse;font-variant-numeric:tabular-nums}
+th,td{padding:7px 4px;text-align:center;border-bottom:1px solid var(--line);font-size:.92rem}
+th{color:var(--sub);font-weight:500;font-size:.78rem;text-transform:uppercase}
+a{color:var(--acc);margin-right:14px;text-decoration:none}
+.note{font-size:.85rem;color:var(--sub);margin-top:8px}
+</style>
+</head>
+<body>
+<main>
+  <h1>Stazione di rilevamento temperatura</h1>
+
+  <div class="grid">
+    <div class="card">
+      <div class="lab">Ora reale</div>
+      <div class="big" id="ora">--:--:--</div>
+      <div class="date" id="data">--/--/----</div>
+      <div class="row"><span class="chip" id="chipOra">orologio</span></div>
+    </div>
+    <div class="card">
+      <div class="lab">Temperatura</div>
+      <div class="big temp" id="temp">--.- &deg;C</div>
+      <div class="row"><span class="chip" id="chipSens">sensore</span><span class="chip" id="chipRete">rete</span></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="stat">
+      <div><span class="lab">Minima</span><b id="tmin">--</b></div>
+      <div><span class="lab">Massima</span><b id="tmax">--</b></div>
+      <div><span class="lab">Media</span><b id="tavg">--</b></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="lab">Andamento (ultime misure registrate)</div>
+    <svg id="grafico" viewBox="0 0 600 180" role="img" aria-label="Grafico temperatura"></svg>
+    <div class="note" id="notaGrafico"></div>
+  </div>
+
+  <div class="card">
+    <div class="lab">Ultime misure</div>
+    <table>
+      <thead><tr><th>Data</th><th>Ora</th><th>&deg;C</th></tr></thead>
+      <tbody id="tabella"></tbody>
+    </table>
+    <p><a href="/csv">Scarica CSV</a><a href="/data">JSON</a><a href="#" id="cancella">Cancella log</a></p>
+  </div>
+</main>
+
+<script>
+var base = null;          // riferimento per far camminare l'orologio tra un aggiornamento e l'altro
+var oraImpostata = false; // per impostare l'ora dal browser una sola volta
+
+function pad(n){ return (n < 10 ? "0" : "") + n; }
+function el(id){ return document.getElementById(id); }
+
+function tickOrologio(){
+  if(!base){ return; }
+  var s = base.sec + Math.floor((Date.now() - base.t) / 1000);
+  s = ((s % 86400) + 86400) % 86400;
+  el("ora").textContent = pad(Math.floor(s / 3600)) + ":" + pad(Math.floor(s % 3600 / 60)) + ":" + pad(s % 60);
+}
+
+function disegna(log){
+  var svg = el("grafico");
+  if(log.length < 2){
+    svg.innerHTML = '<text x="300" y="95" text-anchor="middle" fill="currentColor" opacity=".5" font-size="14">In attesa di almeno 2 misure...</text>';
+    el("notaGrafico").textContent = "";
+    return;
+  }
+  var v = log.map(function(r){ return r[2]; });
+  var mn = Math.min.apply(null, v), mx = Math.max.apply(null, v);
+  if(mx - mn < 1){ var c = (mx + mn) / 2; mn = c - 0.5; mx = c + 0.5; }
+  var L = 44, R = 10, T = 12, B = 22, W = 600 - L - R, H = 180 - T - B;
+  var pts = v.map(function(y, i){
+    var px = L + W * i / (v.length - 1);
+    var py = T + H * (1 - (y - mn) / (mx - mn));
+    return px.toFixed(1) + "," + py.toFixed(1);
+  }).join(" ");
+  var out = "";
+  for(var k = 0; k <= 3; k++){
+    var yy = T + H * k / 3, val = mx - (mx - mn) * k / 3;
+    out += '<line x1="' + L + '" y1="' + yy + '" x2="' + (L + W) + '" y2="' + yy + '" stroke="currentColor" opacity=".12"/>';
+    out += '<text x="' + (L - 6) + '" y="' + (yy + 4) + '" text-anchor="end" font-size="11" fill="currentColor" opacity=".6">' + val.toFixed(1) + '</text>';
+  }
+  out += '<polyline fill="none" stroke="#d35400" stroke-width="2.5" stroke-linejoin="round" points="' + pts + '"/>';
+  out += '<text x="' + L + '" y="176" font-size="11" fill="currentColor" opacity=".6">' + log[0][1] + '</text>';
+  out += '<text x="' + (L + W) + '" y="176" text-anchor="end" font-size="11" fill="currentColor" opacity=".6">' + log[log.length - 1][1] + '</text>';
+  svg.innerHTML = out;
+  el("notaGrafico").textContent = log.length + " misure";
+}
+
+function mostra(d){
+  // orologio
+  if(d.sync){
+    base = { sec: d.sec, t: Date.now() };
+    el("data").textContent = d.data;
+    el("chipOra").textContent = (d.src === "manuale") ? "ora dal tuo dispositivo" : "sincronizzata (NTP)";
+    el("chipOra").className = "chip ok";
+  } else {
+    base = null;
+    el("ora").textContent = "--:--:--";
+    el("data").textContent = "ora non disponibile";
+    el("chipOra").textContent = "non sincronizzata";
+    el("chipOra").className = "chip ko";
+    if(!oraImpostata){
+      oraImpostata = true;
+      fetch("/settime?t=" + Math.floor(Date.now() / 1000)).then(aggiorna);
+    }
+  }
+  tickOrologio();
+
+  // temperatura
+  if(d.ok){
+    el("temp").innerHTML = d.t.toFixed(1) + " &deg;C";
+    el("chipSens").textContent = "sensore OK";
+    el("chipSens").className = "chip ok";
+  } else {
+    el("temp").innerHTML = "--.- &deg;C";
+    el("chipSens").textContent = "sensore non trovato";
+    el("chipSens").className = "chip ko";
+  }
+  el("chipRete").textContent = d.ap ? "rete propria (AP)" : "Wi-Fi " + d.ip;
+
+  // statistiche
+  var v = d.log.map(function(r){ return r[2]; });
+  if(v.length){
+    var somma = v.reduce(function(a, b){ return a + b; }, 0);
+    el("tmin").textContent = Math.min.apply(null, v).toFixed(1) + " °C";
+    el("tmax").textContent = Math.max.apply(null, v).toFixed(1) + " °C";
+    el("tavg").textContent = (somma / v.length).toFixed(1) + " °C";
+  }
+
+  disegna(d.log);
+
+  // tabella (dalla piu' recente)
+  var html = "";
+  for(var i = d.log.length - 1, n = 0; i >= 0 && n < 12; i--, n++){
+    html += "<tr><td>" + d.log[i][0] + "</td><td>" + d.log[i][1] + "</td><td>" + d.log[i][2].toFixed(2) + "</td></tr>";
+  }
+  el("tabella").innerHTML = html || '<tr><td colspan="3">Nessuna misura ancora</td></tr>';
+}
+
+function aggiorna(){
+  return fetch("/data", { cache: "no-store" })
+    .then(function(r){ return r.json(); })
+    .then(mostra)
+    .catch(function(){
+      el("chipSens").textContent = "stazione non raggiungibile";
+      el("chipSens").className = "chip ko";
+    });
+}
+
+el("cancella").addEventListener("click", function(e){
+  e.preventDefault();
+  if(confirm("Cancellare il file di log?")){
+    fetch("/cancella").then(aggiorna);
+  }
+});
+
+aggiorna();
+setInterval(aggiorna, 2000);
+setInterval(tickOrologio, 500);
+</script>
+</body>
+</html>
+)rawliteral";
 
 // -------------------------
 // OGGETTI E VARIABILI
@@ -61,24 +273,42 @@ int testaStorico = 0;  // prossima posizione da scrivere
 float ultimaTemp = NAN;
 bool sensoreOk = false;
 bool modoAP = false;
-bool primaMisura = true;
-unsigned long ultimaMisura = 0;
+bool oraManuale = false;   // ora impostata dal browser
+bool conversioneInCorso = false;
+bool primaRichiesta = true;
+bool primoLog = true;
+unsigned long tRichiesta = 0;
+unsigned long ultimaRichiesta = 0;
+unsigned long ultimoLog = 0;
+unsigned long ledFinoA = 0;
 
 // -------------------------
-// FUNZIONI DI SUPPORTO
+// OROLOGIO
 // -------------------------
-bool prendiOra(char* data, char* ora) {
-  struct tm t;
-  if (!getLocalTime(&t, 0) || t.tm_year < 120) {  // anno < 2020 = non sincronizzato
+bool orologioValido() {
+  return time(nullptr) > 1700000000;  // dopo nov 2023 = e' stato impostato
+}
+
+// Scrive data e ora locali nei buffer. Ritorna false se l'ora non e' disponibile.
+bool prendiOra(char* data, char* ora, long* secondiGiorno = nullptr) {
+  if (!orologioValido()) {
     strcpy(data, "N/D");
     strcpy(ora, "N/D");
+    if (secondiGiorno) *secondiGiorno = 0;
     return false;
   }
+  time_t now = time(nullptr);
+  struct tm t;
+  localtime_r(&now, &t);
   snprintf(data, 11, "%02d/%02d/%04d", t.tm_mday, t.tm_mon + 1, t.tm_year + 1900);
   snprintf(ora, 9, "%02d:%02d:%02d", t.tm_hour, t.tm_min, t.tm_sec);
+  if (secondiGiorno) *secondiGiorno = t.tm_hour * 3600L + t.tm_min * 60L + t.tm_sec;
   return true;
 }
 
+// -------------------------
+// MISURE
+// -------------------------
 void salvaSuFile(const Misura& m) {
   bool nuovo = !LittleFS.exists(FILE_LOG);
   File f = LittleFS.open(FILE_LOG, FILE_APPEND);
@@ -91,19 +321,7 @@ void salvaSuFile(const Misura& m) {
   f.close();
 }
 
-void eseguiMisura() {
-  sensors.requestTemperatures();
-  float t = sensors.getTempCByIndex(0);
-
-  if (t == DEVICE_DISCONNECTED_C) {
-    sensoreOk = false;
-    Serial.println("Errore: sensore non trovato!");
-    return;
-  }
-
-  sensoreOk = true;
-  ultimaTemp = t;
-
+void registraMisura(float t) {
   Misura m;
   prendiOra(m.data, m.ora);
   m.temp = t;
@@ -116,57 +334,119 @@ void eseguiMisura() {
   Serial.printf("%s,%s,%.2f\n", m.data, m.ora, m.temp);
 }
 
+// Lettura non bloccante: chiede la conversione, dopo 800 ms legge il risultato.
+void gestisciMisura() {
+  unsigned long adesso = millis();
+
+  if (!conversioneInCorso) {
+    if (primaRichiesta || adesso - ultimaRichiesta >= INTERVALLO_LIVE) {
+      primaRichiesta = false;
+      ultimaRichiesta = adesso;
+      sensors.requestTemperatures();
+      tRichiesta = adesso;
+      conversioneInCorso = true;
+    }
+    return;
+  }
+
+  if (adesso - tRichiesta < TEMPO_CONVERSIONE) return;
+
+  conversioneInCorso = false;
+  float t = sensors.getTempCByIndex(0);
+
+  // -127 = sensore scollegato, 85.0 = valore di accensione (lettura non valida)
+  if (t == DEVICE_DISCONNECTED_C || t == 85.0) {
+    sensoreOk = false;
+    Serial.println("Errore: sensore non trovato o lettura non valida!");
+    return;
+  }
+
+  sensoreOk = true;
+  ultimaTemp = t;
+  ledFinoA = adesso + 150;  // lampeggio breve a ogni lettura
+
+  if (primoLog || adesso - ultimoLog >= INTERVALLO_LOG) {
+    primoLog = false;
+    ultimoLog = adesso;
+    registraMisura(t);
+  }
+}
+
+void gestisciLed() {
+  if (!sensoreOk) {  // lampeggio veloce = problema col sensore
+    static unsigned long t0 = 0;
+    if (millis() - t0 >= 250) {
+      t0 = millis();
+      digitalWrite(PIN_LED, !digitalRead(PIN_LED));
+    }
+    return;
+  }
+  digitalWrite(PIN_LED, millis() < ledFinoA ? HIGH : LOW);
+}
+
 // -------------------------
 // PAGINE WEB
 // -------------------------
 void handleRoot() {
-  char data[11], ora[9];
-  prendiOra(data, ora);
-
-  String html;
-  html.reserve(3000);
-  html += F("<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width, initial-scale=1'>"
-            "<meta http-equiv='refresh' content='30'>"
-            "<title>Stazione Termica</title>"
-            "<style>body{font-family:sans-serif;max-width:600px;margin:20px auto;padding:0 12px;}"
-            "h1{font-size:1.4em}.temp{font-size:3em;font-weight:bold;color:#c0392b}"
-            "table{border-collapse:collapse;width:100%}"
-            "td,th{border:1px solid #ccc;padding:6px;text-align:center}"
-            "a{margin-right:12px}</style></head><body>");
-  html += F("<h1>Stazione di rilevamento temperatura</h1>");
-
-  if (sensoreOk) {
-    html += "<div class='temp'>" + String(ultimaTemp, 2) + " &deg;C</div>";
-  } else {
-    html += F("<div class='temp'>--</div><p><b>Sensore non rilevato!</b></p>");
-  }
-  html += "<p>Ora attuale: " + String(data) + " " + String(ora) + "</p>";
-
-  html += F("<h2>Ultime misure</h2><table><tr><th>Data</th><th>Ora</th><th>&deg;C</th></tr>");
-  // dalla piu' recente alla piu' vecchia
-  for (int i = 0; i < nStorico; i++) {
-    int idx = (testaStorico - 1 - i + MAX_STORICO) % MAX_STORICO;
-    html += "<tr><td>" + String(storico[idx].data) + "</td><td>" + String(storico[idx].ora) +
-            "</td><td>" + String(storico[idx].temp, 2) + "</td></tr>";
-  }
-  html += F("</table><p><a href='/csv'>Scarica CSV</a><a href='/data'>JSON</a>"
-            "<a href='/cancella' onclick=\"return confirm('Cancellare il file di log?')\">Cancella log</a></p>"
-            "</body></html>");
-
-  server.send(200, "text/html", html);
+  server.send(200, "text/html; charset=utf-8", PAGINA);
 }
 
 void handleData() {
   char data[11], ora[9];
-  prendiOra(data, ora);
+  long sec = 0;
+  bool sync = prendiOra(data, ora, &sec);
 
-  String json = "{";
-  json += "\"sensore_ok\":" + String(sensoreOk ? "true" : "false") + ",";
-  json += "\"temperatura\":" + (sensoreOk ? String(ultimaTemp, 2) : String("null")) + ",";
-  json += "\"data\":\"" + String(data) + "\",";
-  json += "\"ora\":\"" + String(ora) + "\"}";
-  server.send(200, "application/json", json);
+  String ip = modoAP ? WiFi.softAPIP().toString() : WiFi.localIP().toString();
+
+  String j;
+  j.reserve(4096);
+  j += "{\"ok\":";
+  j += sensoreOk ? "true" : "false";
+  j += ",\"t\":";
+  j += sensoreOk ? String(ultimaTemp, 2) : String("null");
+  j += ",\"sync\":";
+  j += sync ? "true" : "false";
+  j += ",\"src\":\"";
+  j += (oraManuale && modoAP) ? "manuale" : "ntp";
+  j += "\",\"data\":\"" + String(data) + "\"";
+  j += ",\"ora\":\"" + String(ora) + "\"";
+  j += ",\"sec\":" + String(sec);
+  j += ",\"ap\":";
+  j += modoAP ? "true" : "false";
+  j += ",\"ip\":\"" + ip + "\"";
+  j += ",\"log\":[";
+  for (int i = 0; i < nStorico; i++) {  // dalla piu' vecchia alla piu' recente
+    int idx = (testaStorico - nStorico + i + MAX_STORICO) % MAX_STORICO;
+    if (i) j += ",";
+    j += "[\"" + String(storico[idx].data) + "\",\"" + String(storico[idx].ora) + "\"," +
+         String(storico[idx].temp, 2) + "]";
+  }
+  j += "]}";
+
+  server.sendHeader("Cache-Control", "no-store");
+  server.send(200, "application/json", j);
+}
+
+// Imposta l'ora usando quella del browser (solo se manca l'ora NTP)
+void handleSetTime() {
+  if (!server.hasArg("t")) {
+    server.send(400, "text/plain", "parametro t mancante");
+    return;
+  }
+  time_t t = (time_t)strtoul(server.arg("t").c_str(), nullptr, 10);
+  if (t < 1700000000) {
+    server.send(400, "text/plain", "ora non valida");
+    return;
+  }
+  if (orologioValido()) {
+    server.send(200, "text/plain", "ora gia' impostata");
+    return;
+  }
+  struct timeval tv = {t, 0};
+  settimeofday(&tv, nullptr);
+  oraManuale = true;
+  Serial.println("Ora impostata dal browser.");
+  server.send(200, "text/plain", "ok");
 }
 
 void handleCsv() {
@@ -184,8 +464,7 @@ void handleCancella() {
   LittleFS.remove(FILE_LOG);
   nStorico = 0;
   testaStorico = 0;
-  server.sendHeader("Location", "/");
-  server.send(303);
+  server.send(200, "text/plain", "ok");
 }
 
 // -------------------------
@@ -206,17 +485,17 @@ void avviaRete() {
 
   if (WiFi.status() == WL_CONNECTED) {
     modoAP = false;
-    Serial.print("Wi-Fi connesso! IP: ");
+    Serial.print("Wi-Fi connesso! Apri nel browser: http://");
     Serial.println(WiFi.localIP());
-    configTzTime(timezone, ntpServer);
+    configTzTime(fusoOrario, ntpServer);
   } else {
-    Serial.println("Wi-Fi non disponibile: avvio Access Point (senza orario NTP).");
+    Serial.println("Wi-Fi non disponibile: avvio Access Point (l'ora verra' presa dal browser).");
     WiFi.mode(WIFI_AP);
     WiFi.softAP(ap_ssid, ap_password);
     modoAP = true;
-    Serial.print("Rete: ");
+    Serial.print("Collegati alla rete ");
     Serial.print(ap_ssid);
-    Serial.print(" - IP: ");
+    Serial.print(" e apri http://");
     Serial.println(WiFi.softAPIP());
   }
 }
@@ -230,8 +509,16 @@ void setup() {
   Serial.println();
   Serial.println("--- STAZIONE TERMICA COMPLETA ---");
 
+  pinMode(PIN_LED, OUTPUT);
+  digitalWrite(PIN_LED, LOW);
+
+  // fuso orario italiano (serve anche se l'ora arriva dal browser)
+  setenv("TZ", fusoOrario, 1);
+  tzset();
+
   sensors.begin();
   sensors.setResolution(12);
+  sensors.setWaitForConversion(false);  // lettura non bloccante
   Serial.print("Sensori trovati: ");
   Serial.println(sensors.getDeviceCount());
 
@@ -243,6 +530,7 @@ void setup() {
 
   server.on("/", handleRoot);
   server.on("/data", handleData);
+  server.on("/settime", handleSetTime);
   server.on("/csv", handleCsv);
   server.on("/cancella", handleCancella);
   server.begin();
@@ -265,9 +553,7 @@ void loop() {
     }
   }
 
-  if (primaMisura || millis() - ultimaMisura >= INTERVALLO) {
-    primaMisura = false;
-    ultimaMisura = millis();
-    eseguiMisura();
-  }
+  gestisciMisura();
+  gestisciLed();
 }
+
