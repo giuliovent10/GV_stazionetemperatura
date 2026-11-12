@@ -1,0 +1,71 @@
+/*
+  04 - Test orologio NTP
+  Errori corretti rispetto alla versione originale:
+   - c'erano due funzioni loop() (errore di compilazione)
+   - printLocalTime() non era definita
+   - il return in setup() non bloccava nulla
+*/
+
+#include <WiFi.h>
+#include "time.h"
+
+// Credenziali Wi-Fi
+const char* ssid = "NOME_RETE_WIFI";
+const char* password = "PASSWORD_WIFI";
+
+// Server NTP
+const char* ntpServer = "pool.ntp.org";
+
+// Fuso orario italiano (CET/CEST con ora legale automatica)
+const char* timezone = "CET-1CEST,M3.5.0/2,M10.5.0/3";
+
+void printLocalTime() {
+  struct tm timeinfo;
+
+  if (getLocalTime(&timeinfo, 5000)) {
+    Serial.println(&timeinfo, "Data e ora: %d/%m/%Y - %H:%M:%S");
+  } else {
+    Serial.println("Ora non disponibile!");
+  }
+}
+
+void setup() {
+  Serial.begin(115200);
+  delay(1000);
+  Serial.println();
+  Serial.println("--- TEST OROLOGIO NTP ---");
+
+  // Connessione Wi-Fi
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  Serial.print("Connessione Wi-Fi");
+
+  int tentativi = 0;
+  while (WiFi.status() != WL_CONNECTED && tentativi < 30) {
+    delay(500);
+    Serial.print(".");
+    tentativi++;
+  }
+
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("\nConnessione Wi-Fi fallita! Controlla SSID e password, poi premi RESET.");
+    return;  // loop() verifichera' comunque lo stato del Wi-Fi
+  }
+
+  Serial.println("\nWi-Fi connesso!");
+
+  // Configurazione orologio
+  configTzTime(timezone, ntpServer);
+  Serial.println("Sincronizzazione orologio...");
+}
+
+void loop() {
+  if (WiFi.status() == WL_CONNECTED) {
+    printLocalTime();
+  } else {
+    Serial.println("Wi-Fi non connesso: orologio non disponibile.");
+  }
+
+  delay(1000);
+}
